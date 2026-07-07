@@ -64,7 +64,7 @@ Build artifacts will be placed in `src-tauri/target/release/bundle/`.
 
 ## Download
 
-Pre-built installers are available on the [Releases](https://github.com/YOUR_USERNAME/REPO_NAME/releases) page.
+Pre-built installers are available on the [Releases](https://github.com/hopekayo/modbus-slave-simulation-tauri/releases) page.
 
 ## License
 
