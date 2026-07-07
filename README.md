@@ -1,5 +1,7 @@
 # Modbus Slave Simulation (Tauri)
 
+[English](./README.md) | [简体中文](./README.zh-CN.md)
+
 A cross-platform [Modbus](https://en.wikipedia.org/wiki/Modbus) slave simulator rebuilt with [Tauri 2](https://v2.tauri.app/) and React. This project is inspired by the original [GitHubDragonFly/ModbusSlaveSimulation](https://github.com/GitHubDragonFly/ModbusSlaveSimulation) Windows/Mono application, but rewritten as a modern, lightweight desktop app using Rust for the backend and a web-based UI.
 
 ## Features
@@ -45,10 +47,27 @@ A cross-platform [Modbus](https://en.wikipedia.org/wiki/Modbus) slave simulator 
 
 ## Development
 
-```bash
-# Ensure cargo is on your PATH (Windows PowerShell example)
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+Install dependencies first, then start the Tauri development window:
 
+```bash
+npm install
+npm run tauri dev
+```
+
+> **Note for Linux/macOS**: Make sure `cargo` is on your PATH. If Rust was installed via rustup, the default location is `~/.cargo/bin`.
+
+### Windows (PowerShell)
+
+```powershell
+$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+npm install
+npm run tauri dev
+```
+
+### Linux / macOS
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
 npm install
 npm run tauri dev
 ```
@@ -56,15 +75,38 @@ npm run tauri dev
 ## Build
 
 ```bash
-$env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 npm run tauri build
 ```
 
 Build artifacts will be placed in `src-tauri/target/release/bundle/`.
 
+### Windows
+
+The build produces an `.msi` installer (and optionally `.exe`) in `src-tauri/target/release/bundle/`.
+
+### Linux
+
+Tauri generates distribution packages such as `.deb`, `.rpm`, and `.AppImage` (depending on your system packages and `tauri.conf.json` bundle targets). For example, on Debian/Ubuntu you will find:
+
+- `src-tauri/target/release/bundle/deb/*.deb`
+- `src-tauri/target/release/bundle/appimage/*.AppImage`
+
+> Building `.rpm` requires `rpm`/`rpmbuild`; building `.AppImage` requires `appimagetool` and related dependencies.
+
+### macOS
+
+The build produces a `.dmg` disk image and a `.app` bundle:
+
+- `src-tauri/target/release/bundle/dmg/*.dmg`
+- `src-tauri/target/release/bundle/macos/*.app`
+
+> Apple Silicon (M1/M2/M3) and Intel Macs are both supported. Tauri builds for the architecture of the active Rust toolchain by default. To cross-compile for the other architecture, configure the appropriate Rust target and toolchain.
+
 ## Download
 
-Pre-built installers are available on the [Releases](https://github.com/hopekayo/modbus-slave-simulation-tauri/releases) page.
+Pre-built installers for Windows, Linux, and macOS are available on the [Releases](https://github.com/hopekayo/modbus-slave-simulation-tauri/releases) page.
+
+> Linux users can download the `.deb` or `.AppImage` package; macOS users can download the `.dmg` image.
 
 ## License
 

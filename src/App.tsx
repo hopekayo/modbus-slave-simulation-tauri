@@ -437,7 +437,7 @@ function App() {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-auto p-2">
+      <div className="flex-1 min-h-0 overflow-auto p-2 pt-0">
         <table className="w-full border-collapse text-xs">
           <thead className="sticky top-0 bg-slate-800 z-10">
             <tr>
