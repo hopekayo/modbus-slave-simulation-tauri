@@ -115,3 +115,7 @@ Windows、Linux 和 macOS 的预构建安装包可在 [Releases](https://github.
 ## 致谢
 
 原始项目：[GitHubDragonFly/ModbusSlaveSimulation](https://github.com/GitHubDragonFly/ModbusSlaveSimulation)
+
+## 相关项目
+
+- [Modbus Master Simulation (Tauri)](https://github.com/hopekayo/modbus-master-simulation-tauri) — 对应配套的 Modbus 主站模拟器。
