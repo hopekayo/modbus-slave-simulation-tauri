@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use rmodbus::{
@@ -16,9 +17,14 @@ use crate::models::{LogEvent, SerialConfig, ServerConfig, ServerStatus, StatusEv
 pub const MAX_REG: usize = 65_535;
 pub type ModbusDataStore = ModbusStorage<MAX_REG, MAX_REG, MAX_REG, MAX_REG>;
 
+pub struct ServerInstance {
+    pub handle: ServerHandle,
+    pub context: Arc<RwLock<Box<ModbusDataStore>>>,
+    pub config: ServerConfig,
+}
+
 pub struct AppState {
-    pub context: &'static RwLock<Box<ModbusDataStore>>,
-    pub handle: Mutex<Option<ServerHandle>>,
+    pub servers: Mutex<HashMap<String, ServerInstance>>,
     pub app_handle: Mutex<Option<AppHandle>>,
 }
 
@@ -36,15 +42,15 @@ fn modbus_proto_from_mode(mode: &str) -> Option<ModbusProto> {
     }
 }
 
-async fn emit_log(app: &Option<AppHandle>, message: String) {
+async fn emit_log(app: &Option<AppHandle>, server_id: String, message: String) {
     if let Some(handle) = app {
-        let _ = handle.emit("modbus-log", LogEvent { message });
+        let _ = handle.emit("modbus-log", LogEvent { server_id, message });
     }
 }
 
-async fn emit_status(app: &Option<AppHandle>, message: String) {
+async fn emit_status(app: &Option<AppHandle>, server_id: String, message: String) {
     if let Some(handle) = app {
-        let _ = handle.emit("modbus-status", StatusEvent { message });
+        let _ = handle.emit("modbus-status", StatusEvent { server_id, message });
     }
 }
 
@@ -82,14 +88,15 @@ async fn process_frame(
     unit: u8,
     proto: ModbusProto,
     request: &[u8],
-    context: &'static RwLock<Box<ModbusDataStore>>,
+    context: Arc<RwLock<Box<ModbusDataStore>>>,
     app: &Option<AppHandle>,
+    server_id: String,
 ) -> Option<Vec<u8>> {
     let mut response = Vec::new();
     let mut frame = ModbusFrame::new(unit, request, proto, &mut response);
 
     if frame.parse().is_err() {
-        emit_log(app, "Modbus frame parse error".to_string()).await;
+        emit_log(app, server_id, "Modbus frame parse error".to_string()).await;
         return None;
     }
 
@@ -103,10 +110,10 @@ async fn process_frame(
         };
 
         if result.is_err() {
-            emit_log(app, "Modbus frame processing error".to_string()).await;
+            emit_log(app, server_id, "Modbus frame processing error".to_string()).await;
         } else {
-            emit_log(app, describe_request(&frame)).await;
-            emit_status(app, "Comms Okay".to_string()).await;
+            emit_log(app, server_id.clone(), describe_request(&frame)).await;
+            emit_status(app, server_id, "Comms Okay".to_string()).await;
         }
     }
 
@@ -125,10 +132,11 @@ async fn tcp_server(
     unit: u8,
     host: String,
     port: u16,
-    context: &'static RwLock<Box<ModbusDataStore>>,
+    context: Arc<RwLock<Box<ModbusDataStore>>>,
     app: Option<AppHandle>,
     cancel: CancellationToken,
     ready: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    server_id: String,
 ) {
     let addr = format!("{}:{}", host, port);
     let listener = match TcpListener::bind(&addr).await {
@@ -140,14 +148,14 @@ async fn tcp_server(
         }
         Err(e) => {
             let msg = format!("TCP bind error: {}", e);
-            emit_status(&app, msg.clone()).await;
+            emit_status(&app, server_id, msg.clone()).await;
             if let Some(r) = ready {
                 let _ = r.send(Err(msg));
             }
             return;
         }
     };
-    emit_status(&app, format!("TCP listening on {}", addr)).await;
+    emit_status(&app, server_id.clone(), format!("TCP listening on {}", addr)).await;
 
     loop {
         tokio::select! {
@@ -155,11 +163,12 @@ async fn tcp_server(
             accept = listener.accept() => {
                 match accept {
                     Ok((mut stream, peer)) => {
-                        let ctx = context;
+                        let ctx = context.clone();
                         let app_clone = app.clone();
                         let cancel_clone = cancel.clone();
+                        let conn_id = server_id.clone();
                         tokio::spawn(async move {
-                            emit_log(&app_clone, format!("TCP client connected: {}", peer)).await;
+                            emit_log(&app_clone, conn_id.clone(), format!("TCP client connected: {}", peer)).await;
                             let mut header = [0u8; 6];
                             loop {
                                 tokio::select! {
@@ -172,34 +181,35 @@ async fn tcp_server(
                                         let mut request = Vec::with_capacity(6 + len);
                                         request.extend_from_slice(&header);
                                         request.extend_from_slice(&body);
-                                        if let Some(resp) = process_frame(unit, ModbusProto::TcpUdp, &request, &ctx, &app_clone).await {
+                                        if let Some(resp) = process_frame(unit, ModbusProto::TcpUdp, &request, ctx.clone(), &app_clone, conn_id.clone()).await {
                                             if stream.write_all(&resp).await.is_err() { break; }
                                         }
                                     }
                                 }
                             }
-                            emit_log(&app_clone, "TCP client disconnected".to_string()).await;
+                            emit_log(&app_clone, conn_id, "TCP client disconnected".to_string()).await;
                         });
                     }
                     Err(e) => {
-                        emit_status(&app, format!("TCP accept error: {}", e)).await;
+                        emit_status(&app, server_id.clone(), format!("TCP accept error: {}", e)).await;
                     }
                 }
             }
         }
     }
 
-    emit_status(&app, "TCP server stopped".to_string()).await;
+    emit_status(&app, server_id, "TCP server stopped".to_string()).await;
 }
 
 async fn udp_server(
     unit: u8,
     host: String,
     port: u16,
-    context: &'static RwLock<Box<ModbusDataStore>>,
+    context: Arc<RwLock<Box<ModbusDataStore>>>,
     app: Option<AppHandle>,
     cancel: CancellationToken,
     ready: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    server_id: String,
 ) {
     let addr = format!("{}:{}", host, port);
     let socket = match UdpSocket::bind(&addr).await {
@@ -211,14 +221,14 @@ async fn udp_server(
         }
         Err(e) => {
             let msg = format!("UDP bind error: {}", e);
-            emit_status(&app, msg.clone()).await;
+            emit_status(&app, server_id, msg.clone()).await;
             if let Some(r) = ready {
                 let _ = r.send(Err(msg));
             }
             return;
         }
     };
-    emit_status(&app, format!("UDP listening on {}", addr)).await;
+    emit_status(&app, server_id.clone(), format!("UDP listening on {}", addr)).await;
 
     let mut buf = [0u8; 1024];
     loop {
@@ -228,29 +238,30 @@ async fn udp_server(
                 match recv {
                     Ok((len, src)) => {
                         let request = &buf[..len];
-                        if let Some(resp) = process_frame(unit, ModbusProto::TcpUdp, request, &context, &app).await {
+                        if let Some(resp) = process_frame(unit, ModbusProto::TcpUdp, request, context.clone(), &app, server_id.clone()).await {
                             let _ = socket.send_to(&resp, src).await;
                         }
                     }
                     Err(e) => {
-                        emit_status(&app, format!("UDP recv error: {}", e)).await;
+                        emit_status(&app, server_id.clone(), format!("UDP recv error: {}", e)).await;
                     }
                 }
             }
         }
     }
 
-    emit_status(&app, "UDP server stopped".to_string()).await;
+    emit_status(&app, server_id, "UDP server stopped".to_string()).await;
 }
 
 async fn serial_server(
     unit: u8,
     proto: ModbusProto,
     serial: SerialConfig,
-    context: &'static RwLock<Box<ModbusDataStore>>,
+    context: Arc<RwLock<Box<ModbusDataStore>>>,
     app: Option<AppHandle>,
     cancel: CancellationToken,
     ready: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
+    server_id: String,
 ) {
     let baud = serial.baud_rate;
     let data_bits = match serial.data_bits {
@@ -284,7 +295,7 @@ async fn serial_server(
         }
         Err(e) => {
             let msg = format!("Serial open error: {}", e);
-            emit_status(&app, msg.clone()).await;
+            emit_status(&app, server_id, msg.clone()).await;
             if let Some(r) = ready {
                 let _ = r.send(Err(msg));
             }
@@ -292,7 +303,7 @@ async fn serial_server(
         }
     };
 
-    emit_status(&app, format!("Serial {} open at {}", serial.port, baud)).await;
+    emit_status(&app, server_id.clone(), format!("Serial {} open at {}", serial.port, baud)).await;
 
     let mut buf = [0u8; 1024];
     let mut pending = Vec::new();
@@ -314,7 +325,7 @@ async fn serial_server(
                                     Ok(decoded_len) => {
                                         let len = decoded_len as usize;
                                         let request = &decoded[..len];
-                                        if let Some(resp) = process_frame(unit, ModbusProto::Ascii, request, &context, &app).await {
+                                        if let Some(resp) = process_frame(unit, ModbusProto::Ascii, request, context.clone(), &app, server_id.clone()).await {
                                             let mut ascii_resp = Vec::new();
                                             if generate_ascii_frame(&resp, &mut ascii_resp).is_ok() {
                                                 let _ = port.write_all(&ascii_resp).await;
@@ -322,7 +333,7 @@ async fn serial_server(
                                         }
                                     }
                                     Err(e) => {
-                                        emit_log(&app, format!("ASCII decode error: {:?}", e)).await;
+                                        emit_log(&app, server_id.clone(), format!("ASCII decode error: {:?}", e)).await;
                                     }
                                 }
                             }
@@ -333,7 +344,7 @@ async fn serial_server(
                                 match guess_request_frame_len(&pending, ModbusProto::Rtu) {
                                     Ok(frame_len) if frame_len > 0 && pending.len() >= frame_len as usize => {
                                         let request: Vec<u8> = pending.drain(..frame_len as usize).collect();
-                                        if let Some(resp) = process_frame(unit, ModbusProto::Rtu, &request, &context, &app).await {
+                                        if let Some(resp) = process_frame(unit, ModbusProto::Rtu, &request, context.clone(), &app, server_id.clone()).await {
                                             let _ = port.write_all(&resp).await;
                                         }
                                     }
@@ -347,7 +358,7 @@ async fn serial_server(
                         }
                     }
                     Err(e) => {
-                        emit_status(&app, format!("Serial read error: {}", e)).await;
+                        emit_status(&app, server_id.clone(), format!("Serial read error: {}", e)).await;
                         break;
                     }
                 }
@@ -355,32 +366,56 @@ async fn serial_server(
         }
     }
 
-    emit_status(&app, "Serial server stopped".to_string()).await;
+    emit_status(&app, server_id, "Serial server stopped".to_string()).await;
 }
 
-pub async fn start_server(
+pub async fn start_server_instance(
     state: &AppState,
     config: ServerConfig,
 ) -> Result<ServerStatus, String> {
-    let mut handle = state.handle.lock().await;
-    if handle.is_some() {
+    let mut servers = state.servers.lock().await;
+
+    if servers.contains_key(&config.id) {
         return Ok(ServerStatus {
+            id: config.id.clone(),
             running: true,
             mode: config.mode.clone(),
             details: "Server already running".to_string(),
         });
     }
 
+    // Check port conflicts for TCP/UDP instances
+    if let Some(net) = config.network.as_ref() {
+        let port = net.port;
+        let host = net.host.clone();
+        for (id, inst) in servers.iter() {
+            if inst.config.mode == config.mode {
+                if let Some(existing) = inst.config.network.as_ref() {
+                    if existing.port == port && existing.host == host {
+                        return Ok(ServerStatus {
+                            id: config.id.clone(),
+                            running: false,
+                            mode: config.mode.clone(),
+                            details: format!("Port {} already in use by {}", port, id),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
     let proto = modbus_proto_from_mode(&config.mode)
         .ok_or_else(|| format!("Unsupported mode: {}", config.mode))?;
 
     let app = state.app_handle.lock().await.clone();
-    let context = state.context;
+    let context: Arc<RwLock<Box<ModbusDataStore>>> =
+        Arc::new(RwLock::new(Box::new(ModbusStorage::default())));
     let cancel = CancellationToken::new();
     let task_cancel = cancel.clone();
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-
+    let server_id = config.id.clone();
     let mode = config.mode.clone();
+
     let task = match config.mode.as_str() {
         "tcp" => {
             let net = config.network.as_ref().ok_or("Missing network config")?;
@@ -388,10 +423,11 @@ pub async fn start_server(
                 config.unit_id,
                 net.host.clone(),
                 net.port,
-                context,
+                context.clone(),
                 app,
                 task_cancel,
                 Some(ready_tx),
+                server_id,
             ))
         }
         "udp" => {
@@ -400,10 +436,11 @@ pub async fn start_server(
                 config.unit_id,
                 net.host.clone(),
                 net.port,
-                context,
+                context.clone(),
                 app,
                 task_cancel,
                 Some(ready_tx),
+                server_id,
             ))
         }
         "rtu" => {
@@ -412,10 +449,11 @@ pub async fn start_server(
                 config.unit_id,
                 proto,
                 serial.clone(),
-                context,
+                context.clone(),
                 app,
                 task_cancel,
                 Some(ready_tx),
+                server_id,
             ))
         }
         "ascii" => {
@@ -424,10 +462,11 @@ pub async fn start_server(
                 config.unit_id,
                 proto,
                 serial.clone(),
-                context,
+                context.clone(),
                 app,
                 task_cancel,
                 Some(ready_tx),
+                server_id,
             ))
         }
         _ => return Err(format!("Unsupported mode: {}", config.mode)),
@@ -440,49 +479,85 @@ pub async fn start_server(
 
     if let Err(e) = ready {
         return Ok(ServerStatus {
+            id: config.id,
             running: false,
             mode: config.mode,
             details: e,
         });
     }
 
-    *handle = Some(ServerHandle { task, cancel });
+    let id = config.id.clone();
+    servers.insert(
+        id.clone(),
+        ServerInstance {
+            handle: ServerHandle { task, cancel },
+            context,
+            config,
+        },
+    );
 
     Ok(ServerStatus {
+        id,
         running: true,
         mode,
         details: "Server started".to_string(),
     })
 }
 
-pub async fn stop_server(state: &AppState) -> Result<ServerStatus, String> {
-    let mut handle = state.handle.lock().await;
-    if let Some(h) = handle.take() {
-        h.cancel.cancel();
-        // Wait a bit for the task to finish, but don't block indefinitely
-        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), h.task).await;
+pub async fn stop_server_instance(
+    state: &AppState,
+    id: String,
+) -> Result<ServerStatus, String> {
+    let mut servers = state.servers.lock().await;
+    if let Some(h) = servers.remove(&id) {
+        h.handle.cancel.cancel();
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), h.handle.task).await;
     }
 
     Ok(ServerStatus {
+        id,
         running: false,
         mode: String::new(),
         details: "Server stopped".to_string(),
     })
 }
 
-pub async fn get_status(state: &AppState) -> ServerStatus {
-    let handle = state.handle.lock().await;
-    if handle.is_some() {
+pub async fn get_instance_status(state: &AppState, id: String) -> ServerStatus {
+    let servers = state.servers.lock().await;
+    if let Some(inst) = servers.get(&id) {
         ServerStatus {
+            id,
             running: true,
-            mode: "active".to_string(),
+            mode: inst.config.mode.clone(),
             details: "Running".to_string(),
         }
     } else {
         ServerStatus {
+            id,
             running: false,
             mode: String::new(),
             details: "Stopped".to_string(),
         }
     }
+}
+
+pub async fn list_servers(state: &AppState) -> Vec<ServerStatus> {
+    let servers = state.servers.lock().await;
+    servers
+        .values()
+        .map(|inst| ServerStatus {
+            id: inst.config.id.clone(),
+            running: true,
+            mode: inst.config.mode.clone(),
+            details: "Running".to_string(),
+        })
+        .collect()
+}
+
+pub async fn get_instance_context(
+    state: &AppState,
+    id: String,
+) -> Option<Arc<RwLock<Box<ModbusDataStore>>>> {
+    let servers = state.servers.lock().await;
+    servers.get(&id).map(|inst| inst.context.clone())
 }

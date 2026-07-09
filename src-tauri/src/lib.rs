@@ -2,24 +2,19 @@ mod commands;
 mod models;
 mod modbus;
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
 
-use rmodbus::server::storage::ModbusStorage;
 use tauri::Manager;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
-use crate::modbus::{AppState, ModbusDataStore};
-
-static MODBUS_CONTEXT: LazyLock<RwLock<Box<ModbusDataStore>>> =
-    LazyLock::new(|| RwLock::new(Box::new(ModbusStorage::default())));
+use crate::modbus::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState {
-            context: &MODBUS_CONTEXT,
-            handle: Mutex::new(None),
+            servers: Mutex::new(HashMap::new()),
             app_handle: Mutex::new(None),
         })
         .setup(|app| {
@@ -34,11 +29,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_serial_ports,
-            commands::get_data_range,
-            commands::set_value,
-            commands::start_server,
-            commands::stop_server_cmd,
-            commands::get_server_status,
+            commands::get_instance_data,
+            commands::set_instance_value,
+            commands::start_server_instance,
+            commands::stop_server_instance,
+            commands::list_servers_cmd,
+            commands::get_instance_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

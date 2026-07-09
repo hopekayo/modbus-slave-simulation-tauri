@@ -3,7 +3,12 @@ use tauri::State;
 use tokio_serial::available_ports;
 
 use crate::models::{DataRangeRequest, DataValues, ServerConfig, ServerStatus, SingleValue};
-use crate::modbus::{AppState, stop_server};
+use crate::modbus::{
+    start_server_instance as start_modbus_instance,
+    stop_server_instance as stop_modbus_instance,
+    AppState, get_instance_context, get_instance_status as modbus_get_instance_status,
+    list_servers,
+};
 
 #[tauri::command]
 pub async fn get_serial_ports() -> Result<Vec<String>, String> {
@@ -14,11 +19,15 @@ pub async fn get_serial_ports() -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub async fn get_data_range(
+pub async fn get_instance_data(
     state: State<'_, AppState>,
+    id: String,
     request: DataRangeRequest,
 ) -> Result<DataValues, String> {
-    let ctx = state.context.read().await;
+    let ctx = get_instance_context(&state, id.clone())
+        .await
+        .ok_or_else(|| format!("Instance {} not found", id))?;
+    let ctx = ctx.read().await;
     let start = request.start as usize;
     let count = request.count as usize;
 
@@ -46,11 +55,15 @@ pub async fn get_data_range(
 }
 
 #[tauri::command]
-pub async fn set_value(
+pub async fn set_instance_value(
     state: State<'_, AppState>,
+    id: String,
     value: SingleValue,
 ) -> Result<(), String> {
-    let mut ctx = state.context.write().await;
+    let ctx = get_instance_context(&state, id.clone())
+        .await
+        .ok_or_else(|| format!("Instance {} not found", id))?;
+    let mut ctx = ctx.write().await;
     let addr = value.address;
 
     match value.kind.as_str() {
@@ -63,19 +76,30 @@ pub async fn set_value(
 }
 
 #[tauri::command]
-pub async fn start_server(
+pub async fn start_server_instance(
     state: State<'_, AppState>,
     config: ServerConfig,
 ) -> Result<ServerStatus, String> {
-    crate::modbus::start_server(&state, config).await
+    start_modbus_instance(&state, config).await
 }
 
 #[tauri::command]
-pub async fn stop_server_cmd(state: State<'_, AppState>) -> Result<ServerStatus, String> {
-    stop_server(&state).await
+pub async fn stop_server_instance(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ServerStatus, String> {
+    stop_modbus_instance(&state, id).await
 }
 
 #[tauri::command]
-pub async fn get_server_status(state: State<'_, AppState>) -> Result<ServerStatus, String> {
-    Ok(crate::modbus::get_status(&state).await)
+pub async fn list_servers_cmd(state: State<'_, AppState>) -> Result<Vec<ServerStatus>, String> {
+    Ok(list_servers(&state).await)
+}
+
+#[tauri::command]
+pub async fn get_instance_status(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ServerStatus, String> {
+    Ok(modbus_get_instance_status(&state, id).await)
 }

@@ -17,6 +17,7 @@ pub struct NetworkConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
+    pub id: String,
     pub mode: String, // "rtu", "ascii", "tcp", "udp"
     pub unit_id: u8,
     pub serial: Option<SerialConfig>,
@@ -46,6 +47,7 @@ pub struct SingleValue {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerStatus {
+    pub id: String,
     pub running: bool,
     pub mode: String,
     pub details: String,
@@ -53,10 +55,12 @@ pub struct ServerStatus {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LogEvent {
+    pub server_id: String,
     pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct StatusEvent {
+    pub server_id: String,
     pub message: String,
 }
